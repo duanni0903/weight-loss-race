@@ -475,7 +475,11 @@ function ProgressChart({ participants, checkins }) {
     const series = participants.map((p) => ({ id: p.id, name: p.name, points: [] }));
     dates.forEach((date, i) => {
       participants.forEach((p, pi) => {
-        const c = (checkins[p.id] || []).find((c) => c.date === date);
+        // Same-day check-ins can happen more than once — use the LATEST
+        // one for that day (checkins are sorted oldest-first, so this
+        // takes the last match instead of the first).
+        const dayEntries = (checkins[p.id] || []).filter((c) => c.date === date);
+        const c = dayEntries.length ? dayEntries[dayEntries.length - 1] : null;
         if (c) lastKnown[p.id] = c.weight;
         series[pi].points.push(lastKnown[p.id] ?? null);
       });
