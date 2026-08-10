@@ -129,6 +129,20 @@ async function saveSharedData(data) {
   return res.json();
 }
 
+// Check-ins are sent separately from the main blob — the backend appends
+// them as their own row in a "Checkins" sheet instead of burying them
+// inside one big JSON cell, so you can actually read/filter them in
+// Google Sheets directly.
+async function saveCheckin(checkin) {
+  const res = await fetch(window.APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "checkin", checkin }),
+  });
+  if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+  return res.json();
+}
+
 function getLocal(key, fallback = null) {
   try {
     const raw = window.localStorage.getItem(key);
@@ -586,7 +600,7 @@ function daysLeftLabel(deadline) {
 function computeLeaderboard(competition) {
   return competition.participants
     .map((p) => {
-      const checkins = (competition.checkins[p.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const checkins = (competition.checkins[p.id] || []).slice().sort((a, b) => (a.time ?? 0) - (b.time ?? 0) || a.date.localeCompare(b.date));
       const latest = checkins.length ? checkins[checkins.length - 1].weight : p.startWeight;
       const latestBodyFat = [...checkins].reverse().find((c) => c.bodyFat != null)?.bodyFat ?? null;
       const kgLost = p.startWeight - latest;
@@ -795,13 +809,32 @@ function App() {
     saveMyIds({ ...myIds, [compId]: pid });
   };
 
-  const addCheckin = (compId, participantId, weight, note, bodyFat) => {
+  const addCheckin = async (compId, participantId, weight, note, bodyFat) => {
     const comp = appData.competitions[compId];
-    const entry = { date: todayISO(), weight, note, bodyFat: bodyFat ?? null };
-    const existing = (comp.checkins[participantId] || []).filter((c) => c.date !== todayISO());
-    const nextList = [...existing, entry].sort((a, b) => a.date.localeCompare(b.date));
+    const participant = comp.participants.find((p) => p.id === participantId);
+    const entry = { id: uid("chk"), date: todayISO(), time: Date.now(), weight, note, bodyFat: bodyFat ?? null };
+    // Optimistic local update so the UI feels instant...
+    const nextList = [...(comp.checkins[participantId] || []), entry].sort((a, b) => a.time - b.time);
     const nextComp = { ...comp, checkins: { ...comp.checkins, [participantId]: nextList } };
-    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: nextComp } });
+    setAppData({ ...appData, competitions: { ...appData.competitions, [compId]: nextComp } });
+    // ...while the real write goes to its own row in the "Checkins" sheet.
+    savingRef.current = true;
+    try {
+      await saveCheckin({
+        competitionId: compId,
+        participantId,
+        participantName: participant ? participant.name : "",
+        id: entry.id,
+        date: entry.date,
+        weight,
+        bodyFat: bodyFat ?? null,
+        note,
+      });
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      savingRef.current = false;
+    }
   };
 
   const updateTarget = (compId, participantId, targetWeight) => {
