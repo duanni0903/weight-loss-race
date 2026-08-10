@@ -1,6 +1,24 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
+<script>
+  // GitHub Pages' CDN caches this file for a while regardless of meta
+  // tags. To make sure everyone always gets the latest version without
+  // having to manually add "?v=..." to the URL, we auto-redirect once
+  // to a fresh, uniquely-numbered URL on every load. That forces a real
+  // (uncached) fetch of the file every time.
+  (function () {
+    var params = new URLSearchParams(location.search);
+    var lastLoad = params.get("v");
+    var justRefreshed = sessionStorage.getItem("just-refreshed");
+    if (!justRefreshed) {
+      sessionStorage.setItem("just-refreshed", "1");
+      location.replace(location.pathname + "?v=" + Date.now());
+    } else {
+      sessionStorage.removeItem("just-refreshed");
+    }
+  })();
+</script>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
