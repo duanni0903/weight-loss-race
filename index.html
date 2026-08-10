@@ -33,7 +33,7 @@
   window.APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxWTOtOgbGu8MnNZJM291DbNCM1KTS9yQ7xUiGjpHxWatHiI4wkisWTnVaZVA_Ofl-C/exec";
 </script>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* ---------------------------------------------------------
@@ -789,6 +789,23 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+<script>
+  // Manually transform + run the JSX above. We do this instead of letting
+  // Babel auto-scan <script type="text/babel"> tags because newer versions
+  // of Babel Standalone default to the "automatic" JSX runtime, which
+  // injects `import ... from "react/jsx-runtime"` — and plain <script>
+  // tags aren't ES modules, so that import throws. Forcing the "classic"
+  // runtime here (which uses the global React.createElement instead)
+  // avoids that entirely.
+  var source = document.getElementById("app-source").textContent;
+  var compiled = Babel.transform(source, {
+    presets: [["react", { runtime: "classic" }]],
+  }).code;
+  var script = document.createElement("script");
+  script.text = compiled;
+  document.body.appendChild(script);
 </script>
 </body>
 </html>
