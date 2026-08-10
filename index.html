@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>瘦身競賽 Race to Goal</title>
+
+<!-- Tailwind for a couple of utility classes (focus rings, animate-spin) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React (no build step needed — this page compiles JSX in the browser) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+  html, body { margin:0; padding:0; background:#11141C; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!--
+  =========================================================================
+  設定：把下面這行的網址換成你部署好的 Google Apps Script Web App 網址
+  （長得像 https://script.google.com/macros/s/AKfycb.../exec）
+  這個檔案不需要 .env、不需要 build，改這裡存檔重新上傳即可。
+  =========================================================================
+-->
+<script>
+  window.APPS_SCRIPT_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
+</script>
+
+<script type="text/babel" data-presets="react,stage-3">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ---------------------------------------------------------
+   Design tokens — "track & clock" theme
+--------------------------------------------------------- */
+const INK = "#11141C";
+const PANEL = "#1A2030";
+const PANEL2 = "#232B3F";
+const LANE = "#3A4360";
+const CHALK = "#F2EFE6";
+const MUTED = "#8B93AC";
+const ORANGE = "#FF5A36";
+const GOLD = "#FFC845";
+const MINT = "#31D6A0";
+
+const DISPLAY_FONT = "'Oswald', 'Arial Narrow', sans-serif";
+const BODY_FONT = "'Inter', system-ui, sans-serif";
+const MONO_FONT = "'JetBrains Mono', 'Courier New', monospace";
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+const POLL_INTERVAL_MS = 8000;
+
+const calcBMI = (weightKg, heightCm) => {
+  if (!weightKg || !heightCm) return null;
+  const h = heightCm / 100;
+  return weightKg / (h * h);
+};
+
+const bmiLabel = (bmi) => {
+  if (bmi == null) return { text: "—", color: MUTED };
+  if (bmi < 18.5) return { text: "過輕", color: "#6C8CFF" };
+  if (bmi < 24) return { text: "正常", color: MINT };
+  if (bmi < 27) return { text: "過重", color: GOLD };
+  return { text: "肥胖", color: "#FF7A6E" };
+};
+
+const AVATAR_COLORS = [ORANGE, GOLD, MINT, "#6C8CFF", "#FF8FB1", "#9F7FFF"];
+const colorFor = (id) => {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+};
+
+/* ---------------------------------------------------------
+   Backend: Google Sheet via Apps Script + localStorage
+--------------------------------------------------------- */
+async function fetchSharedData() {
+  const res = await fetch(window.APPS_SCRIPT_URL, { method: "GET" });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+  const json = await res.json();
+  return json && json.competitions ? json : { competitions: {} };
+}
+
+async function saveSharedData(data) {
+  // text/plain keeps this a "simple request" so the browser skips the
+  // CORS preflight, which Apps Script Web Apps don't handle well.
+  const res = await fetch(window.APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ data }),
+  });
+  if (!res.ok) throw new Error(`Save failed: ${res.status}`);
+  return res.json();
+}
+
+function getLocal(key, fallback = null) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw != null ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+function setLocal(key, value) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+
+/* ---------------------------------------------------------
+   Shared style objects
+--------------------------------------------------------- */
+const inputStyle = {
+  width: "100%", background: PANEL2, border: `1px solid ${LANE}`, borderRadius: 10, padding: "10px 12px",
+  color: CHALK, fontFamily: BODY_FONT, fontSize: 15, outline: "none", boxSizing: "border-box",
+};
+const primaryBtnStyle = {
+  background: ORANGE, color: "#1A0F0A", fontWeight: 700, fontFamily: BODY_FONT, border: "none",
+  borderRadius: 10, padding: "11px 18px", fontSize: 15,
+};
+const ghostBtnStyle = {
+  background: "transparent", color: CHALK, fontWeight: 600, fontFamily: BODY_FONT, border: `1px solid ${LANE}`,
+  borderRadius: 10, padding: "11px 18px", fontSize: 14,
+};
+const labelStyle = { display: "block", fontSize: 12, color: MUTED, marginBottom: 5 };
+const emptyBoxStyle = {
+  display: "flex", alignItems: "center", gap: 10, background: PANEL,
+  border: `1px dashed ${LANE}`, borderRadius: 14, padding: "20px 16px",
+};
+
+/* ---------------------------------------------------------
+   Loading / error
+--------------------------------------------------------- */
+function LoadingScreen() {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: INK }}>
+      <div className="animate-spin" style={{ width: 28, height: 28, border: `3px solid ${LANE}`, borderTopColor: ORANGE, borderRadius: "50%" }} />
+    </div>
+  );
+}
+
+function ErrorScreen({ message, onRetry }) {
+  const misconfigured = !window.APPS_SCRIPT_URL || window.APPS_SCRIPT_URL.includes("PASTE_YOUR");
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: INK, padding: 20 }}>
+      <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 16, padding: 28, maxWidth: 420, textAlign: "center" }}>
+        <p style={{ color: CHALK, fontFamily: BODY_FONT, fontSize: 14, marginBottom: 14, lineHeight: 1.6 }}>
+          {misconfigured
+            ? <>還沒設定 Google Apps Script 網址。請打開這個 HTML 檔案，把最上面的 <code style={{ color: ORANGE }}>window.APPS_SCRIPT_URL</code> 換成你部署好的網址。</>
+            : "無法連線到資料庫，請確認 Apps Script 已部署為「任何人皆可存取」。"}
+        </p>
+        <p style={{ color: MUTED, fontFamily: MONO_FONT, fontSize: 12, marginBottom: 18 }}>{message}</p>
+        <button onClick={onRetry} className="focus:ring-2" style={primaryBtnStyle}>重試</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Setup — create the competition
+--------------------------------------------------------- */
+function SetupScreen({ onCreate }) {
+  const [name, setName] = useState("");
+  const [deadline, setDeadline] = useState("");
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 16, padding: 32, width: "100%", maxWidth: 440 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <span style={{ color: ORANGE, fontSize: 18 }}>🏁</span>
+          <span style={{ fontFamily: MONO_FONT, color: MUTED, fontSize: 12, letterSpacing: 1 }}>NEW RACE</span>
+        </div>
+        <h1 style={{ fontFamily: DISPLAY_FONT, fontSize: 32, fontWeight: 700, color: CHALK, margin: "4px 0 20px", lineHeight: 1.1 }}>開一場瘦身競賽</h1>
+        <label style={{ display: "block", fontSize: 13, color: MUTED, marginBottom: 6 }}>比賽名稱</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：夏日甩肉大賽" className="focus:ring-2" style={inputStyle} />
+        <label style={{ display: "block", fontSize: 13, color: MUTED, margin: "16px 0 6px" }}>截止日期</label>
+        <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className="focus:ring-2" style={inputStyle} />
+        <button
+          disabled={!name || !deadline}
+          onClick={() => onCreate(name.trim(), deadline)}
+          className="focus:ring-2"
+          style={{ ...primaryBtnStyle, width: "100%", marginTop: 22, opacity: !name || !deadline ? 0.5 : 1, cursor: !name || !deadline ? "not-allowed" : "pointer" }}
+        >建立比賽 ›</button>
+        <p style={{ fontSize: 12, color: MUTED, marginTop: 14, lineHeight: 1.6 }}>
+          這個網站的資料會分享給所有拿到連結的朋友，任何人都可以加入、打卡與留言。
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Countdown clock
+--------------------------------------------------------- */
+function CountdownClock({ deadline }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const diff = new Date(deadline + "T23:59:59").getTime() - now;
+  const done = diff <= 0;
+  const days = Math.max(0, Math.floor(diff / 86400000));
+  const hours = Math.max(0, Math.floor((diff % 86400000) / 3600000));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <span style={{ color: done ? MINT : ORANGE, fontSize: 18 }}>⏱</span>
+      {done ? (
+        <span style={{ fontFamily: MONO_FONT, color: MINT, fontSize: 14, fontWeight: 700 }}>比賽已結束</span>
+      ) : (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6, fontFamily: MONO_FONT }}>
+          <span style={{ fontSize: 26, fontWeight: 700, color: CHALK }}>{days}</span>
+          <span style={{ fontSize: 12, color: MUTED }}>天</span>
+          <span style={{ fontSize: 26, fontWeight: 700, color: CHALK }}>{hours}</span>
+          <span style={{ fontSize: 12, color: MUTED }}>小時後截止</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Leaderboard
+--------------------------------------------------------- */
+function Leaderboard({ rows }) {
+  if (rows.length === 0) {
+    return (
+      <div style={emptyBoxStyle}>
+        <span style={{ color: MUTED, fontSize: 18 }}>⚖</span>
+        <span style={{ color: MUTED, fontSize: 14 }}>還沒有人加入比賽，成為第一位選手吧！</span>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {rows.map((r, i) => (
+        <div key={r.id} style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: MONO_FONT, fontSize: 12, fontWeight: 700, flexShrink: 0,
+                background: i === 0 ? GOLD : LANE, color: i === 0 ? "#1A0F0A" : CHALK,
+              }}>{i === 0 ? "🏆" : i + 1}</div>
+              <span style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 600, color: CHALK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
+            </div>
+            <div style={{ display: "flex", gap: 14, fontFamily: MONO_FONT, fontSize: 13, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <span style={{ color: CHALK }}>{r.latest.toFixed(1)} kg</span>
+              <span style={{ color: r.kgLost >= 0 ? MINT : "#FF7A6E" }}>{r.kgLost >= 0 ? "-" : "+"}{Math.abs(r.kgLost).toFixed(1)} kg</span>
+              <span style={{ color: MUTED }}>({r.pctLost.toFixed(1)}%)</span>
+              {r.bmi != null && <span style={{ color: bmiLabel(r.bmi).color }}>BMI {r.bmi.toFixed(1)}</span>}
+              {r.latestBodyFat != null && <span style={{ color: MUTED }}>體脂 {r.latestBodyFat.toFixed(1)}%</span>}
+            </div>
+          </div>
+          <div style={{ position: "relative", height: 10, background: PANEL2, borderRadius: 999, overflow: "visible" }}>
+            <div style={{
+              position: "absolute", left: 0, top: 0, bottom: 0,
+              width: `${Math.max(2, r.progress ?? Math.max(0, Math.min(100, r.pctLost * 5)))}%`,
+              background: r.progress >= 100 ? MINT : colorFor(r.id), borderRadius: 999, transition: "width 0.4s ease",
+            }} />
+            <div style={{ position: "absolute", right: -2, top: -7, fontSize: 14, opacity: r.hasGoal ? 1 : 0.25 }}>🏁</div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, flexWrap: "wrap", gap: 4 }}>
+            <span style={{ fontSize: 11, color: MUTED, fontFamily: MONO_FONT }}>起點 {r.startWeight} kg{r.height ? ` · 身高 ${r.height} cm` : ""}</span>
+            <span style={{ fontSize: 11, color: MUTED, fontFamily: MONO_FONT }}>{r.hasGoal ? `目標 ${r.targetWeight} kg · 達成 ${r.progress.toFixed(0)}%` : "尚未設定目標體重"}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Join form
+--------------------------------------------------------- */
+function JoinForm({ onJoin }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [height, setHeight] = useState("");
+  const [startWeight, setStartWeight] = useState("");
+  const [targetWeight, setTargetWeight] = useState("");
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="focus:ring-2" style={{ ...ghostBtnStyle, display: "flex", alignItems: "center", gap: 8 }}>
+        🙋 加入比賽
+      </button>
+    );
+  }
+  const canSubmit = name.trim() && startWeight && height;
+  const previewBmi = calcBMI(parseFloat(startWeight), parseFloat(height));
+  return (
+    <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: 18 }}>
+      <h3 style={{ fontFamily: DISPLAY_FONT, fontSize: 18, color: CHALK, margin: "0 0 12px" }}>加入比賽</h3>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>你的名字</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="怎麼稱呼你" />
+        </div>
+        <div>
+          <label style={labelStyle}>身高 (cm)</label>
+          <input type="number" step="0.1" value={height} onChange={(e) => setHeight(e.target.value)} style={inputStyle} placeholder="170" />
+        </div>
+        <div>
+          <label style={labelStyle}>起始體重 (kg)</label>
+          <input type="number" step="0.1" value={startWeight} onChange={(e) => setStartWeight(e.target.value)} style={inputStyle} placeholder="70.0" />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>目標體重 (kg，選填)</label>
+          <input type="number" step="0.1" value={targetWeight} onChange={(e) => setTargetWeight(e.target.value)} style={inputStyle} placeholder="65.0" />
+        </div>
+      </div>
+      {previewBmi != null && (
+        <div style={{ marginTop: 10, fontSize: 12, color: MUTED, fontFamily: MONO_FONT }}>
+          預估 BMI：<span style={{ color: bmiLabel(previewBmi).color, fontWeight: 700 }}>{previewBmi.toFixed(1)} · {bmiLabel(previewBmi).text}</span>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <button
+          disabled={!canSubmit}
+          onClick={() => {
+            onJoin(name.trim(), parseFloat(startWeight), targetWeight ? parseFloat(targetWeight) : null, parseFloat(height));
+            setOpen(false); setName(""); setStartWeight(""); setTargetWeight(""); setHeight("");
+          }}
+          className="focus:ring-2"
+          style={{ ...primaryBtnStyle, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}
+        >確認加入</button>
+        <button onClick={() => setOpen(false)} className="focus:ring-2" style={ghostBtnStyle}>取消</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Check-in form
+--------------------------------------------------------- */
+function CheckinForm({ participants, myId, setMyId, onCheckin, onUpdateTarget, onUpdateHeight }) {
+  const [weight, setWeight] = useState("");
+  const [bodyFat, setBodyFat] = useState("");
+  const [note, setNote] = useState("");
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [targetInput, setTargetInput] = useState("");
+  const [editingHeight, setEditingHeight] = useState(false);
+  const [heightInput, setHeightInput] = useState("");
+
+  if (participants.length === 0) return null;
+  const me = participants.find((p) => p.id === myId);
+
+  return (
+    <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <span style={{ color: ORANGE, fontSize: 17 }}>📉</span>
+        <h3 style={{ fontFamily: DISPLAY_FONT, fontSize: 18, color: CHALK, margin: 0 }}>今日打卡</h3>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={labelStyle}>我是</label>
+          <select value={myId || ""} onChange={(e) => { setMyId(e.target.value); setEditingTarget(false); setEditingHeight(false); }} style={inputStyle}>
+            <option value="" disabled>選擇你的名字</option>
+            {participants.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>今天體重 (kg)</label>
+          <input type="number" step="0.1" value={weight} onChange={(e) => setWeight(e.target.value)} style={inputStyle} placeholder="68.5" />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>體脂率 (%，選填)</label>
+          <input type="number" step="0.1" value={bodyFat} onChange={(e) => setBodyFat(e.target.value)} style={inputStyle} placeholder="22.0" />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>備註（選填）</label>
+          <input value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} placeholder="今天有跑步 5 公里" />
+        </div>
+      </div>
+
+      {me && (
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${LANE}` }}>
+          {!editingTarget ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <span style={{ fontSize: 13, color: MUTED }}>目標體重：{me.targetWeight ? `${me.targetWeight} kg` : "尚未設定"}</span>
+              <button onClick={() => { setTargetInput(me.targetWeight ?? ""); setEditingTarget(true); }} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13 }}>✎ 調整目標</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="number" step="0.1" value={targetInput} onChange={(e) => setTargetInput(e.target.value)} placeholder="65.0" style={{ ...inputStyle, width: 100 }} />
+              <button onClick={() => { onUpdateTarget(myId, targetInput !== "" ? parseFloat(targetInput) : null); setEditingTarget(false); }} className="focus:ring-2" style={{ ...primaryBtnStyle, padding: "8px 14px", fontSize: 13 }}>儲存</button>
+              <button onClick={() => setEditingTarget(false)} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "8px 14px", fontSize: 13 }}>取消</button>
+            </div>
+          )}
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${LANE}` }}>
+            {!editingHeight ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <span style={{ fontSize: 13, color: MUTED }}>身高：{me.height ? `${me.height} cm` : "尚未設定"}</span>
+                <button onClick={() => { setHeightInput(me.height ?? ""); setEditingHeight(true); }} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13 }}>✎ {me.height ? "調整身高" : "補填身高"}</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input type="number" step="0.1" value={heightInput} onChange={(e) => setHeightInput(e.target.value)} placeholder="170" style={{ ...inputStyle, width: 100 }} />
+                <button onClick={() => { onUpdateHeight(myId, heightInput !== "" ? parseFloat(heightInput) : null); setEditingHeight(false); }} className="focus:ring-2" style={{ ...primaryBtnStyle, padding: "8px 14px", fontSize: 13 }}>儲存</button>
+                <button onClick={() => setEditingHeight(false)} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "8px 14px", fontSize: 13 }}>取消</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <button
+        disabled={!myId || !weight}
+        onClick={() => { onCheckin(myId, parseFloat(weight), note.trim(), bodyFat !== "" ? parseFloat(bodyFat) : null); setWeight(""); setBodyFat(""); setNote(""); }}
+        className="focus:ring-2"
+        style={{ ...primaryBtnStyle, marginTop: 14, opacity: !myId || !weight ? 0.5 : 1, cursor: !myId || !weight ? "not-allowed" : "pointer" }}
+      >送出打卡</button>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Progress chart — hand-rolled SVG line chart
+   (no charting library needed, keeps this a single file)
+--------------------------------------------------------- */
+function ProgressChart({ participants, checkins }) {
+  const chartData = useMemo(() => {
+    const dateSet = new Set();
+    participants.forEach((p) => (checkins[p.id] || []).forEach((c) => dateSet.add(c.date)));
+    const dates = Array.from(dateSet).sort();
+    if (dates.length === 0) return { dates: [], series: [] };
+
+    const lastKnown = {};
+    const series = participants.map((p) => ({ id: p.id, name: p.name, points: [] }));
+    dates.forEach((date, i) => {
+      participants.forEach((p, pi) => {
+        const c = (checkins[p.id] || []).find((c) => c.date === date);
+        if (c) lastKnown[p.id] = c.weight;
+        series[pi].points.push(lastKnown[p.id] ?? null);
+      });
+    });
+    return { dates, series };
+  }, [participants, checkins]);
+
+  if (chartData.dates.length === 0) {
+    return (
+      <div style={emptyBoxStyle}>
+        <span style={{ color: MUTED, fontSize: 18 }}>📉</span>
+        <span style={{ color: MUTED, fontSize: 14 }}>大家開始打卡後，這裡會畫出體重走勢圖。</span>
+      </div>
+    );
+  }
+
+  const W = 600, H = 240, PAD_L = 34, PAD_R = 14, PAD_T = 14, PAD_B = 24;
+  const allVals = chartData.series.flatMap((s) => s.points.filter((v) => v != null));
+  const min = Math.min(...allVals), max = Math.max(...allVals);
+  const yPad = (max - min) * 0.1 || 1;
+  const yMin = min - yPad, yMax = max + yPad;
+  const n = chartData.dates.length;
+
+  const xFor = (i) => n <= 1 ? PAD_L : PAD_L + (i / (n - 1)) * (W - PAD_L - PAD_R);
+  const yFor = (v) => PAD_T + (1 - (v - yMin) / (yMax - yMin)) * (H - PAD_T - PAD_B);
+
+  const gridLines = 4;
+
+  return (
+    <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: "18px 10px 12px" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 260, overflow: "visible" }}>
+        {Array.from({ length: gridLines + 1 }).map((_, i) => {
+          const y = PAD_T + (i / gridLines) * (H - PAD_T - PAD_B);
+          const val = yMax - (i / gridLines) * (yMax - yMin);
+          return (
+            <g key={i}>
+              <line x1={PAD_L} x2={W - PAD_R} y1={y} y2={y} stroke={LANE} strokeDasharray="3 3" />
+              <text x={0} y={y + 4} fontSize="10" fill={MUTED} fontFamily={MONO_FONT}>{val.toFixed(0)}</text>
+            </g>
+          );
+        })}
+        {chartData.dates.map((d, i) => (
+          i % Math.ceil(n / 6 || 1) === 0 && (
+            <text key={d} x={xFor(i)} y={H - 6} fontSize="10" fill={MUTED} fontFamily={MONO_FONT} textAnchor="middle">{d.slice(5)}</text>
+          )
+        ))}
+        {chartData.series.map((s) => {
+          const pts = s.points.map((v, i) => (v == null ? null : [xFor(i), yFor(v)])).filter(Boolean);
+          if (pts.length === 0) return null;
+          const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0]},${p[1]}`).join(" ");
+          const color = colorFor(s.id);
+          return (
+            <g key={s.id}>
+              <path d={path} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              {pts.map((p, i) => (<circle key={i} cx={p[0]} cy={p[1]} r="2.5" fill={color} />))}
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8, paddingLeft: 6 }}>
+        {chartData.series.map((s) => (
+          <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: colorFor(s.id), display: "inline-block" }} />
+            <span style={{ fontSize: 12, color: MUTED, fontFamily: BODY_FONT }}>{s.name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Cheer wall
+--------------------------------------------------------- */
+function CheerWall({ comments, participants, onAdd }) {
+  const [author, setAuthor] = useState("");
+  const [text, setText] = useState("");
+  const nameOf = (id) => participants.find((p) => p.id === id)?.name;
+
+  return (
+    <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <span style={{ color: ORANGE, fontSize: 17 }}>💬</span>
+        <h3 style={{ fontFamily: DISPLAY_FONT, fontSize: 18, color: CHALK, margin: 0 }}>互相打氣</h3>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 260, overflowY: "auto", marginBottom: 14 }}>
+        {comments.length === 0 && <span style={{ color: MUTED, fontSize: 13 }}>還沒有留言，說句加油的話吧！</span>}
+        {comments.slice().reverse().map((c) => (
+          <div key={c.id} style={{ background: PANEL2, borderRadius: 10, padding: "8px 12px" }}>
+            <div style={{ display: "flex", gap: 8, fontSize: 12, color: MUTED, marginBottom: 3 }}>
+              <span style={{ fontWeight: 700, color: CHALK }}>{c.author}</span>
+              {c.participantId && <span>→ {nameOf(c.participantId) || "大家"}</span>}
+            </div>
+            <div style={{ fontSize: 14, color: CHALK }}>{c.text}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="你的名字" style={{ ...inputStyle, width: 110 }} />
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="留言加油打氣"
+          style={{ ...inputStyle, flex: 1, minWidth: 140 }}
+          onKeyDown={(e) => { if (e.key === "Enter" && author.trim() && text.trim()) { onAdd(author.trim(), text.trim()); setText(""); } }}
+        />
+        <button disabled={!author.trim() || !text.trim()} onClick={() => { onAdd(author.trim(), text.trim()); setText(""); }} className="focus:ring-2" style={{ ...primaryBtnStyle, padding: "10px 14px", opacity: !author.trim() || !text.trim() ? 0.5 : 1 }}>➤</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Home
+--------------------------------------------------------- */
+function daysLeftLabel(deadline) {
+  const diff = new Date(deadline + "T23:59:59").getTime() - Date.now();
+  if (diff <= 0) return "已結束";
+  return `剩 ${Math.floor(diff / 86400000)} 天`;
+}
+
+function computeLeaderboard(competition) {
+  return competition.participants
+    .map((p) => {
+      const checkins = (competition.checkins[p.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      const latest = checkins.length ? checkins[checkins.length - 1].weight : p.startWeight;
+      const latestBodyFat = [...checkins].reverse().find((c) => c.bodyFat != null)?.bodyFat ?? null;
+      const kgLost = p.startWeight - latest;
+      const pctLost = p.startWeight ? (kgLost / p.startWeight) * 100 : 0;
+      const hasGoal = !!p.targetWeight && p.targetWeight < p.startWeight;
+      const goalRange = hasGoal ? p.startWeight - p.targetWeight : null;
+      const progress = hasGoal ? Math.max(0, Math.min(100, (kgLost / goalRange) * 100)) : null;
+      const bmi = calcBMI(latest, p.height);
+      return { ...p, latest, kgLost, pctLost, hasGoal, progress, bmi, latestBodyFat };
+    })
+    .sort((a, b) => (b.progress != null ? b.progress : b.pctLost) - (a.progress != null ? a.progress : a.pctLost));
+}
+
+function NewCompetitionForm({ onCreate }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [deadline, setDeadline] = useState("");
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="focus:ring-2" style={{ ...primaryBtnStyle, display: "inline-flex", alignItems: "center", gap: 8 }}>➕ 建立新比賽</button>
+    );
+  }
+  const canSubmit = name.trim() && deadline;
+  return (
+    <div style={{ background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: 18 }}>
+      <h3 style={{ fontFamily: DISPLAY_FONT, fontSize: 18, color: CHALK, margin: "0 0 12px" }}>建立新比賽</h3>
+      <label style={labelStyle}>比賽名稱</label>
+      <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="例如：秋季戰袍計畫" />
+      <label style={{ ...labelStyle, marginTop: 10 }}>截止日期</label>
+      <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} style={inputStyle} />
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <button disabled={!canSubmit} onClick={() => { onCreate(name.trim(), deadline); setOpen(false); setName(""); setDeadline(""); }} className="focus:ring-2" style={{ ...primaryBtnStyle, opacity: canSubmit ? 1 : 0.5 }}>建立</button>
+        <button onClick={() => setOpen(false)} className="focus:ring-2" style={ghostBtnStyle}>取消</button>
+      </div>
+    </div>
+  );
+}
+
+function HomeScreen({ competitions, onSelect, onCreate }) {
+  if (competitions.length === 0) return <SetupScreen onCreate={onCreate} />;
+  return (
+    <div style={{ maxWidth: 640, margin: "0 auto", padding: "36px 16px 60px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <span style={{ color: ORANGE, fontSize: 16 }}>🏁</span>
+        <span style={{ fontFamily: MONO_FONT, color: MUTED, fontSize: 12, letterSpacing: 1 }}>ALL RACES</span>
+      </div>
+      <h1 style={{ fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, color: CHALK, margin: "4px 0 24px" }}>選一場比賽</h1>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+        {competitions.map((c) => (
+          <button key={c.id} onClick={() => onSelect(c.id)} className="focus:ring-2" style={{ textAlign: "left", background: PANEL, border: `1px solid ${LANE}`, borderRadius: 14, padding: "16px 18px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, color: CHALK, fontFamily: BODY_FONT, width: "100%" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 19, fontWeight: 600, color: CHALK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 3, fontFamily: MONO_FONT }}>{c.participants.length} 位選手 · {daysLeftLabel(c.deadline)}</div>
+            </div>
+            <span style={{ color: MUTED, fontSize: 18 }}>›</span>
+          </button>
+        ))}
+      </div>
+      <NewCompetitionForm onCreate={onCreate} />
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Competition dashboard
+--------------------------------------------------------- */
+function SectionTitle({ icon, children }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <h2 style={{ fontFamily: DISPLAY_FONT, fontSize: 20, fontWeight: 600, color: CHALK, margin: 0 }}>{children}</h2>
+    </div>
+  );
+}
+
+function CompetitionDashboard({ competition, myId, onBack, onJoin, onCheckin, onUpdateTarget, onUpdateHeight, onSetMyId, onAddComment }) {
+  const leaderboard = useMemo(() => computeLeaderboard(competition), [competition]);
+  return (
+    <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 16px 60px" }}>
+      <button onClick={onBack} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13, marginBottom: 18, display: "inline-flex", alignItems: "center", gap: 6 }}>‹ 所有比賽</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ color: ORANGE, fontSize: 16 }}>🏁</span>
+            <span style={{ fontFamily: MONO_FONT, color: MUTED, fontSize: 12, letterSpacing: 1 }}>RACE TO GOAL</span>
+          </div>
+          <h1 style={{ fontFamily: DISPLAY_FONT, fontSize: 34, fontWeight: 700, color: CHALK, margin: 0, lineHeight: 1.05 }}>{competition.name}</h1>
+        </div>
+        <CountdownClock deadline={competition.deadline} />
+      </div>
+
+      <SectionTitle icon="🏆">排行榜</SectionTitle>
+      <Leaderboard rows={leaderboard} />
+
+      <div style={{ height: 22 }} />
+      <JoinForm onJoin={onJoin} />
+
+      <div style={{ height: 30 }} />
+      <SectionTitle icon="📉">打卡</SectionTitle>
+      <CheckinForm participants={competition.participants} myId={myId} setMyId={onSetMyId} onCheckin={onCheckin} onUpdateTarget={onUpdateTarget} onUpdateHeight={onUpdateHeight} />
+
+      <div style={{ height: 30 }} />
+      <SectionTitle icon="📉">體重走勢</SectionTitle>
+      <ProgressChart participants={competition.participants} checkins={competition.checkins} />
+
+      <div style={{ height: 30 }} />
+      <CheerWall comments={competition.comments} participants={competition.participants} onAdd={onAddComment} />
+
+      <p style={{ fontSize: 11, color: MUTED, textAlign: "center", marginTop: 32, lineHeight: 1.6 }}>
+        此頁面的資料儲存在 Google Sheet，所有拿到連結的朋友都能看到並新增紀錄（約每 8 秒自動同步一次）。
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   App
+--------------------------------------------------------- */
+function App() {
+  const [appData, setAppData] = useState(null);
+  const [activeId, setActiveId] = useState(() => getLocal("last-competition", null));
+  const [myIds, setMyIds] = useState(() => getLocal("my-ids", {}));
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const savingRef = useRef(false);
+
+  const loadData = useCallback(async () => {
+    try {
+      const data = await fetchSharedData();
+      if (!savingRef.current) setAppData(data);
+      setError(null);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    const t = setInterval(loadData, POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [loadData]);
+
+  const saveApp = async (next) => {
+    setAppData(next);
+    savingRef.current = true;
+    try {
+      await saveSharedData(next);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
+  const saveMyIds = (next) => { setMyIds(next); setLocal("my-ids", next); };
+  const selectCompetition = (id) => { setActiveId(id); setLocal("last-competition", id); };
+  const backHome = () => { setActiveId(null); setLocal("last-competition", null); };
+
+  const createCompetition = (name, deadline) => {
+    const id = uid("race");
+    const comp = { id, name, deadline, createdAt: Date.now(), participants: [], checkins: {}, comments: [] };
+    saveApp({ ...appData, competitions: { ...appData.competitions, [id]: comp } });
+    selectCompetition(id);
+  };
+
+  const joinRace = (compId, name, startWeight, targetWeight, height) => {
+    const pid = uid("p");
+    const participant = { id: pid, name, startWeight, targetWeight: targetWeight || null, height: height || null, joinedAt: todayISO() };
+    const comp = appData.competitions[compId];
+    const nextComp = { ...comp, participants: [...comp.participants, participant] };
+    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: nextComp } });
+    saveMyIds({ ...myIds, [compId]: pid });
+  };
+
+  const addCheckin = (compId, participantId, weight, note, bodyFat) => {
+    const comp = appData.competitions[compId];
+    const entry = { date: todayISO(), weight, note, bodyFat: bodyFat ?? null };
+    const existing = (comp.checkins[participantId] || []).filter((c) => c.date !== todayISO());
+    const nextList = [...existing, entry].sort((a, b) => a.date.localeCompare(b.date));
+    const nextComp = { ...comp, checkins: { ...comp.checkins, [participantId]: nextList } };
+    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: nextComp } });
+  };
+
+  const updateTarget = (compId, participantId, targetWeight) => {
+    const comp = appData.competitions[compId];
+    const nextParticipants = comp.participants.map((p) => (p.id === participantId ? { ...p, targetWeight } : p));
+    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: { ...comp, participants: nextParticipants } } });
+  };
+
+  const updateHeight = (compId, participantId, height) => {
+    const comp = appData.competitions[compId];
+    const nextParticipants = comp.participants.map((p) => (p.id === participantId ? { ...p, height } : p));
+    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: { ...comp, participants: nextParticipants } } });
+  };
+
+  const addComment = (compId, author, text) => {
+    const comp = appData.competitions[compId];
+    const comment = { id: uid("c"), author, text, participantId: myIds[compId] || null, ts: Date.now() };
+    saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: { ...comp, comments: [...comp.comments, comment] } } });
+  };
+
+  if (loading) return <LoadingScreen />;
+  if (error && !appData) return <ErrorScreen message={error} onRetry={loadData} />;
+
+  const competitionsList = Object.values(appData.competitions).sort((a, b) => b.createdAt - a.createdAt);
+  const activeComp = activeId ? appData.competitions[activeId] : null;
+
+  return (
+    <div style={{ minHeight: "100vh", background: INK, fontFamily: BODY_FONT }}>
+      {activeComp ? (
+        <CompetitionDashboard
+          competition={activeComp}
+          myId={myIds[activeComp.id] || ""}
+          onBack={backHome}
+          onJoin={(name, sw, tw, h) => joinRace(activeComp.id, name, sw, tw, h)}
+          onCheckin={(pid, w, note, bf) => addCheckin(activeComp.id, pid, w, note, bf)}
+          onUpdateTarget={(pid, tw) => updateTarget(activeComp.id, pid, tw)}
+          onUpdateHeight={(pid, h) => updateHeight(activeComp.id, pid, h)}
+          onSetMyId={(pid) => saveMyIds({ ...myIds, [activeComp.id]: pid })}
+          onAddComment={(author, text) => addComment(activeComp.id, author, text)}
+        />
+      ) : (
+        <HomeScreen competitions={competitionsList} onSelect={selectCompetition} onCreate={createCompetition} />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
