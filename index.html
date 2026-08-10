@@ -74,7 +74,15 @@ const DISPLAY_FONT = "'Oswald', 'Arial Narrow', sans-serif";
 const BODY_FONT = "'Inter', system-ui, sans-serif";
 const MONO_FONT = "'JetBrains Mono', 'Courier New', monospace";
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => {
+  // Use the browser's LOCAL calendar date, not UTC. toISOString() converts
+  // to UTC first, which for Taiwan (UTC+8) can flip to "yesterday" for
+  // anyone checking in between midnight and 8am local time — this way
+  // "today" always matches the date on the person's own clock.
+  const d = new Date();
+  const localMidnightAdjusted = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return localMidnightAdjusted.toISOString().slice(0, 10);
+};
 const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const POLL_INTERVAL_MS = 8000;
 
