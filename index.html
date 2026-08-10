@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>瘦身競賽 Race to Goal</title>
 
 <!-- Tailwind for a couple of utility classes (focus rings, animate-spin) -->
@@ -633,11 +636,43 @@ function SectionTitle({ icon, children }) {
   );
 }
 
-function CompetitionDashboard({ competition, myId, onBack, onJoin, onCheckin, onUpdateTarget, onUpdateHeight, onSetMyId, onAddComment }) {
+function CompetitionDashboard({ competition, myId, onBack, onJoin, onCheckin, onUpdateTarget, onUpdateHeight, onSetMyId, onAddComment, onDelete }) {
   const leaderboard = useMemo(() => computeLeaderboard(competition), [competition]);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 16px 60px" }}>
-      <button onClick={onBack} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13, marginBottom: 18, display: "inline-flex", alignItems: "center", gap: 6 }}>‹ 所有比賽</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
+        <button onClick={onBack} className="focus:ring-2" style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}>‹ 所有比賽</button>
+
+        {!confirmingDelete ? (
+          <button
+            onClick={() => setConfirmingDelete(true)}
+            className="focus:ring-2"
+            style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 13, color: "#FF7A6E", borderColor: "#5A3230" }}
+          >
+            🗑 刪除比賽
+          </button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#241417", border: "1px solid #5A3230", borderRadius: 10, padding: "6px 10px" }}>
+            <span style={{ fontSize: 12, color: "#FF9E8F" }}>確定要刪除這場比賽？所有紀錄都會消失，無法復原。</span>
+            <button
+              onClick={() => onDelete(competition.id)}
+              className="focus:ring-2"
+              style={{ background: "#FF5A36", color: "#1A0F0A", fontWeight: 700, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}
+            >
+              確定刪除
+            </button>
+            <button
+              onClick={() => setConfirmingDelete(false)}
+              className="focus:ring-2"
+              style={{ ...ghostBtnStyle, padding: "6px 12px", fontSize: 12 }}
+            >
+              取消
+            </button>
+          </div>
+        )}
+      </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
@@ -761,6 +796,13 @@ function App() {
     saveApp({ ...appData, competitions: { ...appData.competitions, [compId]: { ...comp, comments: [...comp.comments, comment] } } });
   };
 
+  const deleteCompetition = (compId) => {
+    const nextCompetitions = { ...appData.competitions };
+    delete nextCompetitions[compId];
+    saveApp({ ...appData, competitions: nextCompetitions });
+    backHome();
+  };
+
   if (loading) return <LoadingScreen />;
   if (error && !appData) return <ErrorScreen message={error} onRetry={loadData} />;
 
@@ -780,6 +822,7 @@ function App() {
           onUpdateHeight={(pid, h) => updateHeight(activeComp.id, pid, h)}
           onSetMyId={(pid) => saveMyIds({ ...myIds, [activeComp.id]: pid })}
           onAddComment={(author, text) => addComment(activeComp.id, author, text)}
+          onDelete={deleteCompetition}
         />
       ) : (
         <HomeScreen competitions={competitionsList} onSelect={selectCompetition} onCreate={createCompetition} />
