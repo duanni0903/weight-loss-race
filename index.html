@@ -826,6 +826,7 @@ function App() {
     try {
       await saveCheckin({
         competitionId: compId,
+        competitionName: comp.name,
         participantId,
         participantName: participant ? participant.name : "",
         id: entry.id,
