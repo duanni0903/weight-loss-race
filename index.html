@@ -467,7 +467,10 @@ function CheckinForm({ participants, myId, setMyId, onCheckin, onUpdateTarget, o
 function ProgressChart({ participants, checkins }) {
   const chartData = useMemo(() => {
     const dateSet = new Set();
-    participants.forEach((p) => (checkins[p.id] || []).forEach((c) => dateSet.add(c.date)));
+    participants.forEach((p) => {
+      (checkins[p.id] || []).forEach((c) => dateSet.add(c.date));
+      if (p.joinedAt) dateSet.add(p.joinedAt); // seed the join-day starting weight too
+    });
     const dates = Array.from(dateSet).sort();
     if (dates.length === 0) return { dates: [], series: [] };
 
@@ -480,7 +483,13 @@ function ProgressChart({ participants, checkins }) {
         // takes the last match instead of the first).
         const dayEntries = (checkins[p.id] || []).filter((c) => c.date === date);
         const c = dayEntries.length ? dayEntries[dayEntries.length - 1] : null;
-        if (c) lastKnown[p.id] = c.weight;
+        if (c) {
+          lastKnown[p.id] = c.weight;
+        } else if (date === p.joinedAt && lastKnown[p.id] == null) {
+          // No actual check-in yet — use the starting weight they
+          // entered when joining as day one's point.
+          lastKnown[p.id] = p.startWeight;
+        }
         series[pi].points.push(lastKnown[p.id] ?? null);
       });
     });
