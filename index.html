@@ -288,6 +288,15 @@ function Leaderboard({ rows }) {
                 background: i === 0 ? GOLD : LANE, color: i === 0 ? "#1A0F0A" : CHALK,
               }}>{i === 0 ? "🏆" : i + 1}</div>
               <span style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 600, color: CHALK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
+              {r.checkedInToday ? (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(49,214,160,0.15)", color: MINT, fontSize: 11, fontFamily: BODY_FONT, fontWeight: 700, borderRadius: 999, padding: "2px 8px", flexShrink: 0 }}>
+                  ✓ 今日已打卡
+                </span>
+              ) : (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: MUTED, fontSize: 11, fontFamily: BODY_FONT, borderRadius: 999, padding: "2px 8px", border: `1px solid ${LANE}`, flexShrink: 0 }}>
+                  今日未打卡
+                </span>
+              )}
             </div>
             <div style={{ display: "flex", gap: 14, fontFamily: MONO_FONT, fontSize: 13, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <span style={{ color: CHALK }}>{r.latest.toFixed(1)} kg</span>
@@ -618,6 +627,7 @@ function daysLeftLabel(deadline) {
 }
 
 function computeLeaderboard(competition) {
+  const today = todayISO();
   return competition.participants
     .map((p) => {
       const checkins = (competition.checkins[p.id] || []).slice().sort((a, b) => (a.time ?? 0) - (b.time ?? 0) || a.date.localeCompare(b.date));
@@ -629,7 +639,8 @@ function computeLeaderboard(competition) {
       const goalRange = hasGoal ? p.startWeight - p.targetWeight : null;
       const progress = hasGoal ? Math.max(0, Math.min(100, (kgLost / goalRange) * 100)) : null;
       const bmi = calcBMI(latest, p.height);
-      return { ...p, latest, kgLost, pctLost, hasGoal, progress, bmi, latestBodyFat };
+      const checkedInToday = checkins.some((c) => c.date === today);
+      return { ...p, latest, kgLost, pctLost, hasGoal, progress, bmi, latestBodyFat, checkedInToday };
     })
     .sort((a, b) => (b.progress != null ? b.progress : b.pctLost) - (a.progress != null ? a.progress : a.pctLost));
 }
